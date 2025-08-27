@@ -1,10 +1,12 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Button from './Button';
 import Input from './Input';
 import Card from './Card';
 import SearchableSelect from './SearchableSelect';
 import Breadcrumb from './Breadcrumb';
+import { useToast } from '../contexts/ToastContext';
+import { requestEmailVerification, verifyEmail, setupUser } from '../services/authService';
 import '../styles/components/SignupModal.css';
 
 function SignupModal({ isOpen, onClose }) {
@@ -26,8 +28,10 @@ function SignupModal({ isOpen, onClose }) {
   const [passwordStrength, setPasswordStrength] = useState(''); // 'weak', 'medium', 'strong'
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [verificationToken, setVerificationToken] = useState(''); // 이메일 인증 후 받는 토큰
 
   const navigate = useNavigate();
+  const { showSuccessToast, showErrorToast } = useToast();
 
   // 모달이 열릴 때마다 상태 초기화
   useEffect(() => {
@@ -48,6 +52,7 @@ function SignupModal({ isOpen, onClose }) {
       setPasswordStrength('');
       setShowPassword(false);
       setShowConfirmPassword(false);
+      setVerificationToken('');
     }
   }, [isOpen]);
 
@@ -132,7 +137,7 @@ function SignupModal({ isOpen, onClose }) {
     setError('회사 추가 요청이 관리자에게 전송되었습니다. 승인 후 가입이 가능합니다.');
   }, []);
 
-  const handleNext = useCallback(() => {
+  const handleNext = useCallback(async () => {
     if (currentStep === 2) {
       // 기본 정보 검증
       if (!formData.name || !formData.email) {
@@ -207,14 +212,26 @@ function SignupModal({ isOpen, onClose }) {
         setError('인증코드를 입력해주세요.');
         return;
       }
-      // 임시로 111111만 허용
-      if (formData.verificationCode !== '111111') {
-        setError('인증코드가 올바르지 않습니다. (임시: 111111)');
-        return;
+      
+      setIsLoading(true);
+      try {
+        // API 호출: 이메일 인증 코드 확인
+        const response = await verifyEmail(formData.email, formData.verificationCode);
+        
+        // 인증 토큰 저장
+        setVerificationToken(response.verification_token);
+        setError('');
+        showSuccessToast('이메일 인증이 완료되었습니다.');
+        setCurrentStep(5);
+        
+      } catch (error) {
+        setError(error.message);
+        showErrorToast(error.message);
+      } finally {
+        setIsLoading(false);
       }
-      setCurrentStep(5);
     }
-  }, [currentStep, formData, companies, validatePasswordStrength]);
+  }, [currentStep, formData, companies, validatePasswordStrength, showSuccessToast, showErrorToast]);
 
   const handlePrev = useCallback(() => {
     if (currentStep > 1) {
@@ -228,24 +245,27 @@ function SignupModal({ isOpen, onClose }) {
       return;
     }
     
+    if (!formData.name) {
+      setError('이름을 먼저 입력해주세요.');
+      return;
+    }
+    
     setIsLoading(true);
     try {
-      // 임시로 2초 대기 (실제로는 백엔드 API 호출)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // API 호출: 이메일 인증 요청
+      await requestEmailVerification(formData.email, formData.name);
       
       setIsVerificationSent(true);
       setError('');
-      // 성공 메시지 표시
-      setTimeout(() => {
-        setError('인증코드가 이메일로 전송되었습니다. (임시: 111111)');
-      }, 100);
+      showSuccessToast('인증코드가 이메일로 전송되었습니다.');
       
     } catch (error) {
-      setError('인증코드 전송에 실패했습니다. 다시 시도해주세요.');
+      setError(error.message);
+      showErrorToast(error.message);
     } finally {
       setIsLoading(false);
     }
-  }, [formData.email]);
+  }, [formData.email, formData.name, showSuccessToast, showErrorToast]);
 
   // 회원가입 완료 후 모달 닫기 (별도 함수) - handleSubmit보다 먼저 정의
   const handleCompleteClose = useCallback(() => {
@@ -266,14 +286,29 @@ function SignupModal({ isOpen, onClose }) {
     setPasswordStrength('');
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setVerificationToken('');
     onClose();
   }, [onClose]);
 
   const handleSubmit = useCallback(async () => {
     setIsLoading(true);
     try {
-      // 회원가입 처리 (실제로는 백엔드 API 호출)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // API 호출: 사용자 설정 및 회원가입 완료
+      const response = await setupUser(
+        formData.email,
+        verificationToken,
+        formData.nickname,
+        formData.password,
+        formData.profileImageUrl
+      );
+      
+      // 성공 시 토큰 저장 (선택사항)
+      if (response.access_token) {
+        localStorage.setItem('accessToken', response.access_token);
+        localStorage.setItem('refreshToken', response.refresh_token);
+      }
+      
+      showSuccessToast('회원가입이 완료되었습니다!');
       
       // 성공 시 모달 닫기
       setTimeout(() => {
@@ -282,10 +317,11 @@ function SignupModal({ isOpen, onClose }) {
         navigate('/login');
       }, 1500);
     } catch (error) {
-      setError('회원가입 처리 중 오류가 발생했습니다.');
+      setError(error.message);
+      showErrorToast(error.message);
       setIsLoading(false);
     }
-  }, [handleCompleteClose, navigate]);
+  }, [formData.email, formData.nickname, formData.password, formData.profileImageUrl, verificationToken, handleCompleteClose, navigate, showSuccessToast, showErrorToast]);
 
   const handleClose = useCallback(() => {
     // 모달 닫기 시 상태 초기화
@@ -305,6 +341,7 @@ function SignupModal({ isOpen, onClose }) {
     setPasswordStrength('');
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setVerificationToken('');
     onClose();
   }, [onClose]);
 
@@ -650,7 +687,7 @@ function SignupModal({ isOpen, onClose }) {
               <Button
                 variant="primary"
                 size="large"
-                onClick={handleNext}
+                onClick={async () => await handleNext()}
                 disabled={isLoading}
               >
                 다음
@@ -661,7 +698,7 @@ function SignupModal({ isOpen, onClose }) {
               <Button
                 variant="primary"
                 size="large"
-                onClick={handleNext}
+                onClick={async () => await handleNext()}
                 disabled={isLoading || !formData.nickname || !formData.password || !formData.confirmPassword}
               >
                 다음
@@ -672,7 +709,7 @@ function SignupModal({ isOpen, onClose }) {
               <Button
                 variant="primary"
                 size="large"
-                onClick={handleNext}
+                onClick={async () => await handleNext()}
                 disabled={isLoading}
               >
                 인증 완료

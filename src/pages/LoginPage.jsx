@@ -6,6 +6,8 @@ import Card from '../components/Card';
 import SignupModal from '../components/SignupModal';
 import { Hyperspeed } from '../external';
 import { companyDomainMap, defaultCompanyName } from '../data/mockData';
+import { login } from '../services/authService';
+import { useToast } from '../contexts/ToastContext';
 import '../styles/pages/LoginPage.css';
 
 function LoginPage() {
@@ -26,6 +28,7 @@ function LoginPage() {
   const [showRememberMe, setShowRememberMe] = useState(false);
   
   const navigate = useNavigate();
+  const { showSuccessToast, showErrorToast } = useToast();
 
   // 마지막 로그인 시간 표시
   useEffect(() => {
@@ -254,92 +257,96 @@ function LoginPage() {
     setIsLoading(true);
 
     try {
-      // 실제 백엔드 API 호출 시뮬레이션
-      // 실제로는 여기서 서버에 로그인 요청을 보냄
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // API 호출: 로그인
+      const response = await login(formData.email, formData.password);
       
-      // 테스트 계정으로 로그인 시도
-      if (formData.email === 'test1@ekmtc.com' && formData.password === 'test1') {
-        recordLoginAttempt(true);
-        
-        const now = new Date();
-        setLastLoginTime(now);
-        try {
-          localStorage.setItem('lastLoginTime', JSON.stringify(now));
-        } catch (error) {
-          console.warn('마지막 로그인 시간 저장 실패:', error);
-        }
-        
-        const domain = formData.email.split('@')[1];
-        const companyName = companyDomainMap[domain] || defaultCompanyName;
-        
-        navigate('/main', { 
-          state: { 
-            companyName, 
-            domain,
-            userEmail: formData.email,
-            nickname: 'test1',
-            rememberMe,
-            sessionStartTime: Date.now()
-          } 
-        });
-      } else {
-        // 로그인 실패 처리
-        recordLoginAttempt(false);
-        
-        // 이메일 존재 여부 확인 (실제로는 백엔드에서 확인)
-        const emailExists = formData.email === 'test1@ekmtc.com';
-        
-        if (!emailExists) {
-          // 존재하지 않는 이메일
-          setErrors({ 
-            email: '등록되지 않은 이메일입니다. 회원가입을 먼저 진행해주세요.',
-            general: '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.'
-          });
-          
-          // 이메일 입력 필드로 포커스 이동
-          setTimeout(() => {
-            const emailInput = document.querySelector('input[name="email"]');
-            if (emailInput) {
-              emailInput.focus();
-              emailInput.select();
-            }
-          }, 100);
-        } else {
-          // 이메일은 존재하지만 비밀번호가 틀림
-          setErrors({ 
-            password: '비밀번호가 올바르지 않습니다.',
-            general: '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.'
-          });
-          
-          // 비밀번호 입력 필드로 포커스 이동
-          setTimeout(() => {
-            const passwordInput = document.querySelector('input[name="password"]');
-            if (passwordInput) {
-              passwordInput.focus();
-              passwordInput.select();
-            }
-          }, 100);
-        }
-        
-        // 에러 메시지 표시 후 5초 뒤 자동으로 사라지게 설정
-        setTimeout(() => {
-          setErrors(prev => {
-            const newErrors = { ...prev };
-            delete newErrors.general;
-            return newErrors;
-          });
-        }, 5000);
+      // 로그인 성공 처리
+      recordLoginAttempt(true);
+      
+      const now = new Date();
+      setLastLoginTime(now);
+      try {
+        localStorage.setItem('lastLoginTime', JSON.stringify(now));
+      } catch (error) {
+        console.warn('마지막 로그인 시간 저장 실패:', error);
       }
-    } catch (error) {
-      // 네트워크 오류 등 예상치 못한 오류
-      setErrors({ 
-        general: '서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.' 
+      
+      // 토큰 저장
+      if (response.access_token) {
+        localStorage.setItem('accessToken', response.access_token);
+        localStorage.setItem('refreshToken', response.refresh_token);
+      }
+      
+      // 사용자 정보에서 회사 도메인 추출
+      const domain = formData.email.split('@')[1];
+      const companyName = companyDomainMap[domain] || defaultCompanyName;
+      
+      showSuccessToast('로그인에 성공했습니다!');
+      
+      navigate('/main', { 
+        state: { 
+          companyName, 
+          domain,
+          userEmail: formData.email,
+          nickname: response.user?.username || '사용자',
+          rememberMe,
+          sessionStartTime: Date.now()
+        } 
       });
+      
+    } catch (error) {
+      // 로그인 실패 처리
+      recordLoginAttempt(false);
+      
+      // 에러 메시지 설정
+      if (error.message.includes('이메일') || error.message.includes('등록')) {
+        setErrors({ 
+          email: '등록되지 않은 이메일입니다. 회원가입을 먼저 진행해주세요.',
+          general: '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.'
+        });
+        
+        // 이메일 입력 필드로 포커스 이동
+        setTimeout(() => {
+          const emailInput = document.querySelector('input[name="email"]');
+          if (emailInput) {
+            emailInput.focus();
+            emailInput.select();
+          }
+        }, 100);
+      } else if (error.message.includes('비밀번호')) {
+        setErrors({ 
+          password: '비밀번호가 올바르지 않습니다.',
+          general: '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.'
+        });
+        
+        // 비밀번호 입력 필드로 포커스 이동
+        setTimeout(() => {
+          const passwordInput = document.querySelector('input[name="password"]');
+          if (passwordInput) {
+            passwordInput.focus();
+            passwordInput.select();
+          }
+        }, 100);
+      } else {
+        setErrors({ 
+          general: error.message || '로그인에 실패했습니다. 다시 시도해주세요.'
+        });
+      }
+      
+      showErrorToast(error.message || '로그인에 실패했습니다.');
+      
+      // 에러 메시지 표시 후 5초 뒤 자동으로 사라지게 설정
+      setTimeout(() => {
+        setErrors(prev => {
+          const newErrors = { ...prev };
+          delete newErrors.general;
+          return newErrors;
+        });
+      }, 5000);
     } finally {
       setIsLoading(false);
     }
-  }, [formData.email, formData.password, navigate, rememberMe, validateEmail, validatePassword, recordLoginAttempt, isLocked, lockoutUntil]);
+  }, [formData.email, formData.password, navigate, rememberMe, validateEmail, validatePassword, recordLoginAttempt, isLocked, lockoutUntil, showSuccessToast, showErrorToast]);
 
   // 회원가입 모달 열기
   const openSignupModal = useCallback(() => {
