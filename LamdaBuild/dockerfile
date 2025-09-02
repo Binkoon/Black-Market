@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1.7
+
+# AWS Lambda Python 3.13 (ARM64) 베이스
+FROM --platform=linux/arm64/v8 public.ecr.aws/lambda/python:3.13-arm64 AS builder
+WORKDIR /work
+
+# 빌드 성능/안정 옵션
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_PREFER_BINARY=1
+
+# (권장) requirements.txt 예시
+# - psycopg2 → psycopg[binary] (psycopg3)로 전환
+# - pydantic은 cp313/aarch64 휠이 있는 버전대 사용
+# 이미 리포에 있다면 COPY만 수행됨
+COPY requirements.txt .
+
+# 의존성 설치 (Lambda Layer 규격상 python/ 디렉터리로)
+RUN python -m pip install --upgrade pip && \
+    pip install --only-binary=:all: -r requirements.txt -t python
+
+# -------------------------
+# 임포트 사전 검증 단계
+# -------------------------
+# 설치된 레이어 폴더를 PYTHONPATH로 잡고 import 테스트
+# 하나라도 실패하면 빌드 실패(exit 1)
+RUN PYTHONPATH=/work/python python - <<'PY'
+import sys, importlib
+
+mods = [
+    ("fastapi", "FastAPI"),
+    ("uvicorn", "version"),
+    ("sqlalchemy", "__version__"),
+    ("psycopg", "__version__"),          # psycopg3
+    ("pydantic", "__version__"),
+    ("multipart", "__version__"),        # python-multipart
+    ("dotenv", "__version__"),           # python-dotenv
+    ("jwt", "__version__"),              # PyJWT
+    ("passlib", "__version__"),
+    ("mangum", "__version__"),
+]
+
+print("== Import check (PYTHONPATH=/work/python) ==")
+failed = []
+for mod, attr in mods:
+    try:
+        m = importlib.import_module(mod)
+        v = getattr(m, attr, None)
+        print(f"[OK] import {mod}", f"- {attr}: {v}" if v is not None else "")
+    except Exception as e:
+        print(f"[FAIL] import {mod}: {e}")
+        failed.append(mod)
+
+# 간단 연동 체크(선택): SQLAlchemy + psycopg 드라이버 이름 확인
+try:
+    import sqlalchemy as sa
+    url = sa.engine.URL.create("postgresql+psycopg", username="u", password="p", host="h", port=5432, database="d")
+    print("[OK] SQLAlchemy URL dialect:", url.get_dialect().name)
+except Exception as e:
+    print("[WARN] SQLAlchemy URL build check failed:", e)
+
+if failed:
+    print("Import check failed for:", failed, file=sys.stderr)
+    sys.exit(1)
+print("== All imports OK ==")
+PY
+
+# -------------------------
+# zip 산출 (최상위에 python/ 포함)
+# -------------------------
+# ...
+RUN python - <<'PY'
+import shutil
+shutil.make_archive("/work/python", "zip", "/work", "python")
+PY
+
+
+FROM scratch AS export
+COPY --from=builder /work/python.zip /python.zip
+
